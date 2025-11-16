@@ -117,21 +117,22 @@ Function Set-LogFolders {
 }
 
 function Backup-ADMX {
-	if (!(Test-Path "$BackupPath\ADMX-$($CurrentDate.ToString("yyyy-MM-dd"))")) {
-		Write-Log -level INFO -message "Backup path folder $BackupPath\ADMX-$($CurrentDate.ToString("yyyy-MM-dd")) doesn't exist, creating now" -logfile $logfile
-		New-Item -Path "$BackupPath\ADMX-$($CurrentDate.ToString("yyyy-MM-dd"))" -ItemType "directory" | out-null
+	$admxBackupPath = "$BackupPath\ADMX-$($CurrentDate.ToString("yyyy-MM-dd_HHmm"))"
+	if (!(Test-Path $admxBackupPath)) {
+		Write-Log -level INFO -message "Backup path folder $admxBackupPath doesn't exist, creating now" -logfile $logfile
+		New-Item -Path $admxBackupPath -ItemType "directory" | out-null
 	}
 	#Backup ADMX files from DC store
 	$Message = "Backing up ADMX files from: C:\Windows\SYSVOL\sysvol\$DomainName\Policies\PolicyDefinitions"
 	Write-Output $Message
 	Write-Log -level INFO -message $Message -logfile $logfile
-	robocopy /E /R:2 /W:10 /V /NDL /NFL  "C:\Windows\SYSVOL\sysvol\$DomainName\Policies\PolicyDefinitions"* "$BackupPath\ADMX-$($CurrentDate.ToString("yyyy-MM-dd"))\SYSVOL-ADMXBackup" | Out-Null
+	robocopy /E /R:2 /W:10 /V /NDL /NFL  "C:\Windows\SYSVOL\sysvol\$DomainName\Policies\PolicyDefinitions"* "$admxBackupPath\SYSVOL-ADMXBackup" | Out-Null
 	
 	#Backup ADMX files from local 
 	$Message = "Backing up ADMX files from: C:\Windows\PolicyDefinitions"
 	Write-Output $Message
 	Write-Log -level INFO -message $Message -logfile $logfile
-	robocopy /E /R:2 /W:10 /V /NDL /NFL  "C:\Windows\PolicyDefinitions"* "$BackupPath\ADMX-$($CurrentDate.ToString("yyyy-MM-dd"))\Local-ADMXBackup" | Out-Null
+	robocopy /E /R:2 /W:10 /V /NDL /NFL  "C:\Windows\PolicyDefinitions"* "$admxBackupPath\Local-ADMXBackup" | Out-Null
 	
 	Write-Output "ADMX Backup completed"
 	Write-Log -level INFO -message "ADMX Backup completed" -logfile $logfile
@@ -154,7 +155,7 @@ If ($ADMX) {
 	Backup-ADMX
 }
 If ($GPO) {
-	$gpoBackupPath = "$BackupPath\GPOBackup-$($CurrentDate.ToString("yyyy-MM-dd"))\"
+	$gpoBackupPath = "$BackupPath\GPOBackup-$($CurrentDate.ToString("yyyy-MM-dd_HHmm"))\"
 	$Message = "GPO Backup was enabled"
 	Write-Verbose $Message 
 	Write-Log -level INFO -message $Message -logfile $logfile

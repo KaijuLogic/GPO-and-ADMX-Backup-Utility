@@ -1,7 +1,6 @@
 <#
-	.DISCLAIMER:
-	By using this content you agree to the following: This script may be used for legal purposes only. Users take full responsibility 
-	for any actions performed using this script. The author accepts no liability for any damage caused by this script.  
+	.SYNOPSIS
+	Simple script to backup Group Policy and ADMX files.
 
 	.DESCRIPTION
 	It's a good idea to periodically backup ADMX files and/or Group Policy configurations. Especially before updating your DC or importing new ADMX files. 
@@ -37,13 +36,22 @@
     Last Modified Date: 16 Nov 2025
     Last Modified By: KaijuLogic
     Last Modification Notes: 
-		- 16 Nov, 2025 - lots of small fixes.
-			* Removing function that is never used. 
-			* Simplifying parameter checks
-			* Explicitly importing required modules
-			* Explicitly require run as admin
-			* Removing some variables that were just duplicates or were only used once or twice
-		* 3.23.2024 - Added Logging, Examples, additional notes and Descriptions. Functionalized commands 
+		24.11.2025
+				Updating folder creation function
+				Updating write-log function to reduce repetative lines
+				Added a couple of try-catches
+				Enabled -whatif capability
+				Added timer for fun and seeing how long the script takes
+
+		16.11.2025
+				lots of small fixes.
+				Removing function that is never used. 
+				Simplifying parameter checks
+				Explicitly importing required modules
+				Explicitly require run as admin
+				Removing some variables that were just duplicates or were only used once or twice
+		3.23.2024 
+				Added Logging, Examples, additional notes and Descriptions. Functionalized commands 
 
 	.TODO
 		Find a better way to do ADMX backup
@@ -51,14 +59,31 @@
 		More detailed feedback
 		Add verification that all ADMX files were backed up
 
+	.DISCLAIMER:
+	By using this content you agree to the following: This script may be used for legal purposes only. Users take full responsibility 
+	for any actions performed using this script. The author accepts no liability for any damage caused by this script.  
+
+
 #>
 #Requires -RunAsAdministrator
 #################################### Parameters ###################################
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param (
-	[Parameter(Mandatory = $true)][String]$BackupPath,
-	[Parameter()][Switch]$ADMX,
-	[Parameter()][Switch]$GPO
+	[Parameter(Mandatory = $true)]
+	[ValidateScript({
+        if (Test-Path $_ -PathType Container) {
+            return $True
+        } else {
+            Throw "$_ not found, please verify your path is correct."
+        }
+    })]
+	[String]$BackupPath,
+
+	[Parameter()]
+	[Switch]$ADMX,
+
+	[Parameter()]
+	[Switch]$GPO
 )
 ################################## Import Modules #################################
 try{
@@ -66,18 +91,24 @@ try{
 	Import-Module GroupPolicy
 }
 catch{
-	Write-Output "Failed to import required modules, are you sure AD and Group Policy tools are installed on this system?"
+	Throw "Failed to import required modules, please make sure Group Policy tools are installed on this system."
 }
 
 ################################# SET COMMON VARIABLES ################################
-$ErrorActionPreference = "Stop"
 $CurrentDate = Get-Date
 $DomainInfo = Get-ADDomain
 $DomainName = $DomainInfo.DNSRoot
+
 #Below variables used for creating logging
 $CurrentPath = split-path -Parent $PSCommandPath
-$Logfile = Join-Path -path  $CurrentPath -ChildPath "\Logs\$($CurrentDate.ToString("yyyy-MM"))\$Env:ComputerName-$($CurrentDate.ToString("yyyy-MM-dd_HH.mm")).txt"
-#Used to track how long it takes updates to install
+$LogFolder = Join-Path -Path $CurrentPath -ChildPath "\ADMX-GPO-BU-Logs\$($CurrentDate.ToString("yyyy-MM"))"
+$Logfile = Join-Path -path  $LogFolder -ChildPath "$Env:ComputerName-$($CurrentDate.ToString("yyyy-MM-dd_HH.mm")).txt"
+
+#Backup paths naming
+$gpoBackupPath = Join-Path -path $BackupPath -ChildPath "GPOBackup-$($CurrentDate.ToString("yyyy-MM-dd_HHmm"))\"
+$admxBackupPath = Join-Path -path $BackupPath -ChildPath "ADMX-$($CurrentDate.ToString("yyyy-MM-dd_HHmm"))\"
+
+#Used to trasck how long the script took to process
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
 #################################### FUNCTIONS #######################################
@@ -86,91 +117,87 @@ Function Write-Log{
     param(
         [Parameter(Mandatory=$false)]
         [ValidateSet("Info","WARN","ERROR","FATAL","DEBUG")]
-        [string]
-        $level = "INFO",
+        [string]$level = "INFO",
 
         [Parameter(Mandatory=$true)]
-        [string]
-        $Message,
+        [string]$Message,
 
         [Parameter(Mandatory=$true)]
-        [string]
-        $logfile
+        [string]$logfile
     )
+
     $Stamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+
     $Line = "$Stamp | $Level | $Message"
-    Add-content $logfile -Value $Line
+    
+    #To make our cli output look ~pretty~
+    $ColorDitcionary = @{"INFO" = "Cyan"; "WARN" = "Yellow"; "ERROR" = "Red"}
+    Write-Host $Line -ForegroundColor $ColorDitcionary[$Level]
+
+    Add-content $logfile -Value $Line -Force
 }
 
-Function Set-LogFolders {
-	$LogFolder = Split-Path $logfile -Parent
-	if (!(Test-Path $LogFolder)) {
-        Try{
-            New-Item -Path $LogFolder -ItemType "directory" | out-null
-        }
-        Catch {
-            Write-Warning "Issue Creating $LogFolder. ERROR: $($_.ErrorDetails.Message)"
+Function Set-NewFolders {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string[]] $FolderPaths
+    )
+    ##Tests for and creates necessary folders and files for the script to run and log appropriatel
+	foreach ($Path in $FolderPaths){
+	    if (!(Test-Path $Path)){
+	        Write-Verbose "$Path does not exist, creating path"
+	        Try{
+	            New-Item -Path $Path -ItemType "directory" | out-null
+	        }
+	        Catch{
+	            Throw "Error creating path: $Path. Error provided: $($_.ErrorDetails.Message)"
+	        }
         }
 	}
 }
 
 function Backup-ADMX {
-	$admxBackupPath = "$BackupPath\ADMX-$($CurrentDate.ToString("yyyy-MM-dd_HHmm"))"
-	if (!(Test-Path $admxBackupPath)) {
-		Write-Log -level INFO -message "Backup path folder $admxBackupPath doesn't exist, creating now" -logfile $logfile
-		New-Item -Path $admxBackupPath -ItemType "directory" | out-null
-	}
 	#Backup ADMX files from DC store
-	$Message = "Backing up ADMX files from: C:\Windows\SYSVOL\sysvol\$DomainName\Policies\PolicyDefinitions"
-	Write-Output $Message
-	Write-Log -level INFO -message $Message -logfile $logfile
-	robocopy /E /R:2 /W:10 /V /NDL /NFL  "C:\Windows\SYSVOL\sysvol\$DomainName\Policies\PolicyDefinitions"* "$admxBackupPath\SYSVOL-ADMXBackup" | Out-Null
+	Write-Log -level INFO -message "Backing up ADMX files from: C:\Windows\SYSVOL\sysvol\$DomainName\Policies\PolicyDefinitions" -logfile $logfile
+	Try{
+		robocopy /E /R:2 /W:10 /V /NDL /NFL  "C:\Windows\SYSVOL\sysvol\$DomainName\Policies\PolicyDefinitions"* "$admxBackupPath\SYSVOL-ADMXBackup" | Out-Null
+	}
+	Catch{
+		Write-Log -level ERROR -message "Ran into an issue backing up sysvol ADMX files. ERROR: $($_.ErrorDetails.Message)" -logfile $logfile
+	}
 	
 	#Backup ADMX files from local 
-	$Message = "Backing up ADMX files from: C:\Windows\PolicyDefinitions"
-	Write-Output $Message
-	Write-Log -level INFO -message $Message -logfile $logfile
-	robocopy /E /R:2 /W:10 /V /NDL /NFL  "C:\Windows\PolicyDefinitions"* "$admxBackupPath\Local-ADMXBackup" | Out-Null
+	Write-Log -level INFO -message "Backing up ADMX files from: C:\Windows\PolicyDefinitions" -logfile $logfile
+	try{
+		robocopy /E /R:2 /W:10 /V /NDL /NFL  "C:\Windows\PolicyDefinitions"* "$admxBackupPath\Local-ADMXBackup" | Out-Null
+	}
+	Catch{
+		Write-Log -level ERROR -message "Ran into an issue backing up local ADMX files. ERROR: $($_.ErrorDetails.Message)" -logfile $logfile
+	}
 	
-	Write-Output "ADMX Backup completed"
 	Write-Log -level INFO -message "ADMX Backup completed" -logfile $logfile
 }
 
 #################################### EXECUTION #####################################
-Set-LogFolders
+Set-NewFolders -FolderPaths $LogFolder
 
 Write-Log -level INFO -message "GPO/ADMX BACKUP SCRIPT, RUN BY $Env:UserName ON $Env:ComputerName" -logfile $logfile
-If (!$ADMX -and !$GPO){
-	$Message = "No options chosen please use -ADMX and/or -GPO"
-	Write-Warning $Message
-	Write-Log -level WARN -message $Message -logfile $logfile
-	Exit
-}
 If ($ADMX) {
-	$Message = "ADMX Backup was enabled"
-	Write-Verbose $Message
-	Write-Log -level INFO -message $Message -logfile $logfile
+	Write-Log -level INFO -message "ADMX Backup was enabled" -logfile $logfile
+	Set-NewFolders -FolderPaths $admxBackupPath
 	Backup-ADMX
 }
 If ($GPO) {
-	$gpoBackupPath = "$BackupPath\GPOBackup-$($CurrentDate.ToString("yyyy-MM-dd_HHmm"))\"
-	$Message = "GPO Backup was enabled"
-	Write-Verbose $Message 
-	Write-Log -level INFO -message $Message -logfile $logfile
-
-	if (!(Test-Path $gpoBackupPath)) {
-		Write-Verbose "Backup path folder $gpoBackupPath doesn't exist, creating now"
-		Write-Log -level INFO -message "Backup path folder $gpoBackupPath doesn't exist, creating now" -logfile $logfile
-		New-Item -Path $gpoBackupPath -ItemType "directory" | out-null
-	}
-	Write-Output "Backing up Group Policy Objects..."
+	Write-Log -level INFO -message "GPO Backup was enabled" -logfile $logfile
+	Set-NewFolders -FolderPaths $gpoBackupPath
 	Write-Log -level INFO -message "Backing up Group Policy Objects" -logfile $logfile
-	Backup-gpo -path $gpoBackupPath -ALL
-	Write-Output "GPO Backup completed"
+	Backup-gpo -path $gpoBackupPath -ALL | Out-Null
 	Write-Log -level INFO -message "GPO Backup completed. Sent to $gpoBackupPath" -logfile $logfile
+}
+else{
+	Throw "No options chosen please use -ADMX and/or -GPO"
 }
 
 $sw.stop()
-$Message = "ADMX and GPO backup script ran for: $($sw.elapsed)"
-Write-Output $Message 
-Write-Log -level INFO -message $Message -logfile $logfile
+
+Write-Log -level INFO -message  "ADMX and GPO backup script ran for: $($sw.elapsed)" -logfile $logfile
